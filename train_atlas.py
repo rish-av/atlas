@@ -170,6 +170,7 @@ class HRLTrainer:
             epoch_loss = 0
             epoch_reward = 0
             for sample in self.dataset:
+                print(f"Training on sample: {sample['bug_report']}")
                 loss, reward = self.train_episode(sample)
                 epoch_loss += loss.item()
                 epoch_reward += reward
@@ -190,7 +191,7 @@ class HRLTrainer:
         print("Evaluation Metrics:", metrics)
 
 
-
+print("Training Atlas Agent...")
 from sample_data import sample_data
 sample_data_obj = sample_data()
 train_data = sample_data_obj.train_dataset
@@ -213,6 +214,8 @@ file_optimizer = optim.Adam(file_agent.parameters(), lr=1e-3)
 func_optimizer = optim.Adam(function_agent.parameters(), lr=1e-3)
 line_optimizer = optim.Adam(line_agent.parameters(), lr=1e-3)
 
+print("Training Atlas Agent...")
+
 trainer = HRLTrainer(
     train_data=train_data,
     test_data=test_data,
@@ -227,5 +230,5 @@ trainer = HRLTrainer(
     entropy_coef=0.01,
     reward_mode="intermediate",
 )
-
+print("Training Atlas Agent...")
 trainer.train(epochs=10)
