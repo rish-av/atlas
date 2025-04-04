@@ -9,7 +9,6 @@ def generate_file_content(file_name):
                 func_contents.append("\n".join(function_to_lines[f]))
             else:
                 func_contents.append(f"def {f}():\n    pass")
-        # Add a simple header to simulate full file content
         header = f"# File: {file_name}\nimport os\n\n"
         return header + "\n\n".join(func_contents)
     else:
@@ -28,21 +27,61 @@ def generate_function_definitions(file_name):
     else:
         return ["def default_func():\n    pass"]
 
-# Realistic bug reports
-realistic_bug_reports = [
-    "Application crashes on login when using invalid credentials",
-    "Database connection fails with timeout error",
-    "Profile page does not load due to missing user data",
-    "Logout button does not trigger logout",
-    "Error calculating total price in checkout",
-    "Unable to update user details in profile",
-    "Payment processing error in billing module",
-    "File upload fails with unexpected error",
-    "Search functionality returns no results",
-    "Email notification not sent on registration"
+# Semantic mapping: bug report -> correct file and function
+semantic_data = [
+    {
+      "bug_report": "Application crashes on login when using invalid credentials",
+      "correct_file": "auth.py",
+      "correct_function": "login"
+    },
+    {
+      "bug_report": "Database connection fails with timeout error",
+      "correct_file": "database.py",
+      "correct_function": "connect_db"
+    },
+    {
+      "bug_report": "Profile page does not load due to missing user data",
+      "correct_file": "profile.py",
+      "correct_function": "load_profile"
+    },
+    {
+      "bug_report": "Logout button does not trigger logout",
+      "correct_file": "auth.py",
+      "correct_function": "logout"
+    },
+    {
+      "bug_report": "Error calculating total price in checkout",
+      "correct_file": "checkout.py",
+      "correct_function": "calculate_total"
+    },
+    {
+      "bug_report": "Unable to update user details in profile",
+      "correct_file": "profile.py",
+      "correct_function": "update_profile"
+    },
+    {
+      "bug_report": "Payment processing error in billing module",
+      "correct_file": "billing.py",
+      "correct_function": "process_payment"
+    },
+    {
+      "bug_report": "File upload fails with unexpected error",
+      "correct_file": "upload.py",
+      "correct_function": "upload_file"
+    },
+    {
+      "bug_report": "Search functionality returns no results",
+      "correct_file": "search.py",
+      "correct_function": "perform_search"
+    },
+    {
+      "bug_report": "Email notification not sent on registration",
+      "correct_file": "notification.py",
+      "correct_function": "send_email"
+    }
 ]
 
-# Candidate file names
+# Candidate file names pool
 candidate_files_pool = [
     "auth.py", "database.py", "views.py", "checkout.py", "billing.py",
     "utils.py", "profile.py", "data_service.py", "notification.py", "upload.py",
@@ -315,37 +354,49 @@ function_to_lines = {
     ]
 }
 
-class sample_data():
-    def __init__(self):
-        trial_dataset = []
-        for i in range(50):
-            bug_report = random.choice(realistic_bug_reports)
-            candidate_file_names = random.sample(candidate_files_pool, 3)
-            candidate_files = [generate_file_content(fname) for fname in candidate_file_names]
-            correct_file_idx = random.randint(0, 2)
-            correct_file_name = candidate_file_names[correct_file_idx]
-            
-            candidate_functions = generate_function_definitions(correct_file_name)
-            correct_function_idx = random.randint(0, len(candidate_functions) - 1)
-            candidate_lines = candidate_functions[correct_function_idx].splitlines()
-            
-            num_lines = len(candidate_lines)
-            correct_line_labels = [0] * num_lines
-            num_buggy = random.choice([1, 2]) if num_lines > 0 else 1
-            buggy_indices = random.sample(range(num_lines), num_buggy)
-            for idx in buggy_indices:
-                correct_line_labels[idx] = 1
+def generate_semantic_dataset(num_samples=100):
+    dataset = []
+    for i in range(num_samples):
+        sem_entry = random.choice(semantic_data)
+        bug_report = sem_entry["bug_report"]
+        correct_file = sem_entry["correct_file"]
+        correct_function = sem_entry["correct_function"]
+        
+        # Candidate files: include the correct file and two distractors
+        distractor_files = [f for f in candidate_files_pool if f != correct_file]
+        candidate_file_names = random.sample(distractor_files, 2) + [correct_file]
+        random.shuffle(candidate_file_names)
+        candidate_files = [generate_file_content(fname) for fname in candidate_file_names]
+        correct_file_idx = candidate_file_names.index(correct_file)
+        
+        # Candidate functions: use full definitions from the correct file
+        candidate_functions = generate_function_definitions(correct_file)
+        correct_function_idx = 0
+        for idx, func_def in enumerate(candidate_functions):
+            header_line = func_def.splitlines()[0]
+            if correct_function in header_line:
+                correct_function_idx = idx
+                break
+        
+        candidate_lines = candidate_functions[correct_function_idx].splitlines()
+        num_lines = len(candidate_lines)
+        correct_line_labels = [0] * num_lines
+        # Force a single buggy line.
+        if num_lines > 0:
+            buggy_index = random.randint(0, num_lines - 1)
+            correct_line_labels[buggy_index] = 1
 
-            sample = {
-                'bug_report': f"Sample {i+1}: {bug_report}",
-                'candidate_files': candidate_files,
-                'correct_file_idx': correct_file_idx,
-                'candidate_functions': candidate_functions,
-                'correct_function_idx': correct_function_idx,
-                'candidate_lines': candidate_lines,
-                'correct_line_labels': correct_line_labels
-            }
-            trial_dataset.append(sample)
+        sample = {
+            'bug_report': f"Sample {i+1}: {bug_report}",
+            'candidate_files': candidate_files,
+            'correct_file_idx': correct_file_idx,
+            'candidate_functions': candidate_functions,
+            'correct_function_idx': correct_function_idx,
+            'candidate_lines': candidate_lines,
+            'correct_line_labels': correct_line_labels,
+            # For pretraining line agent with CE, we assume a single correct line index:
+            'correct_line_idx': correct_line_labels.index(1) if 1 in correct_line_labels else 0
+        }
+        dataset.append(sample)
+    return dataset
 
-        self.train_dataset = trial_dataset[:80]
-        self.test_dataset = trial_dataset[80:]
