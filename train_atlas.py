@@ -263,6 +263,7 @@ class HRLTrainer:
             epoch_loss = 0
             epoch_reward = 0
             for sample in self.dataset:
+                print(f"Training on sample: {sample['bug_report']}")
                 loss, reward = self.train_episode(sample)
                 epoch_loss += loss.item()
                 epoch_reward += reward
