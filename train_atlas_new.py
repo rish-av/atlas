@@ -5,8 +5,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
+# --- Modified HRLTrainer using Precomputed Embeddings from JSON ---
+
 class HRLTrainer:
-    def __init__(self, train_loader, test_loader, file_agent, function_agent, line_agent, 
+    def __init__(self, train_data, test_data, file_agent, function_agent, line_agent, 
                  file_optimizer, func_optimizer, line_optimizer, device="cpu", 
                  entropy_coef=0.01, reward_mode="sparse", alpha=0.5, tau=0.1,
                  file_pretrain_epochs=0, func_pretrain_epochs=0, line_pretrain_epochs=0):
@@ -16,8 +18,8 @@ class HRLTrainer:
         tau: temperature parameter for ranking reward approximations
         Pretrain epochs: number of epochs to pretrain each agent individually.
         """
-        self.train_loader = train_loader
-        self.test_loader = test_loader
+        self.dataset = train_data
+        self.test_dataset = test_data
         self.file_agent = file_agent.to(device)
         self.function_agent = function_agent.to(device)
         self.line_agent = line_agent.to(device)
@@ -38,54 +40,64 @@ class HRLTrainer:
         loss_fn = nn.CrossEntropyLoss()
         for epoch in range(self.file_pretrain_epochs):
             epoch_loss = 0
-            for sample in self.train_loader:
-                bug_emb = sample['stack_trace_embedding'].to(self.device)  # Already batched
-                file_emb = sample['file_embeddings'].to(self.device)
+            for sample in self.dataset:
+                bug_emb = sample['stack_trace_embedding'].unsqueeze(0).to(self.device)
+                file_emb = sample['file_embeddings'].unsqueeze(0).to(self.device)
                 file_probs, _ = self.file_agent(bug_emb, file_emb)
-                target = torch.tensor(sample['correct_file_idx'], dtype=torch.long, device=self.device)
-                loss = loss_fn(file_probs, target)
+                if len(sample['file_embeddings']) <= sample['correct_file_idx']:
+                    target = F.one_hot(torch.tensor(sample['correct_file_idx']-1, dtype=torch.long, device=self.device), 
+                                    num_classes=len(sample['file_embeddings'])).float()
+                else:
+                    target = F.one_hot(torch.tensor(sample['correct_file_idx'], dtype=torch.long, device=self.device), 
+                                    num_classes=len(sample['file_embeddings'])).float()
+                loss = loss_fn(file_probs, target.unsqueeze(0))
                 epoch_loss += loss.item()
                 self.file_optimizer.zero_grad()
                 loss.backward()
                 self.file_optimizer.step()
-            print(f"Pretrain File Agent Epoch {epoch+1}: Loss = {epoch_loss/len(self.train_loader):.4f}")
+            print(f"Pretrain File Agent Epoch {epoch+1}: Loss = {epoch_loss/len(self.dataset):.4f}")
 
     def pretrain_function_agent(self):
         self.function_agent.train()
         loss_fn = nn.CrossEntropyLoss()
         for epoch in range(self.func_pretrain_epochs):
             epoch_loss = 0
-            for sample in self.train_loader:
-                bug_emb = sample['stack_trace_embedding'].to(self.device)
-                func_emb = sample['function_embeddings'].to(self.device)
+            for sample in self.dataset:
+                bug_emb = sample['stack_trace_embedding'].unsqueeze(0).to(self.device)
+                func_emb = sample['function_embeddings'].unsqueeze(0).to(self.device)
                 func_probs, _ = self.function_agent(bug_emb, func_emb)
-                # Skip sample if correct_function_idx is -1
-                if sample['correct_function_idx'][0] == -1:
+
+                if sample['correct_function_idx'] == -1:
                     continue
-                target = torch.tensor(sample['correct_function_idx'], dtype=torch.long, device=self.device)
+                target = F.one_hot(torch.tensor(sample['correct_function_idx'], dtype=torch.long, device=self.device), 
+                                   num_classes=len(sample['function_embeddings'])).float().unsqueeze(0)
                 loss = loss_fn(func_probs, target)
                 epoch_loss += loss.item()
                 self.func_optimizer.zero_grad()
                 loss.backward()
                 self.func_optimizer.step()
-            print(f"Pretrain Function Agent Epoch {epoch+1}: Loss = {epoch_loss/len(self.train_loader):.4f}")
+            print(f"Pretrain Function Agent Epoch {epoch+1}: Loss = {epoch_loss/len(self.dataset):.4f}")
 
     def pretrain_line_agent(self):
         self.line_agent.train()
         loss_fn = nn.CrossEntropyLoss()
         for epoch in range(self.line_pretrain_epochs):
             epoch_loss = 0
-            for sample in self.train_loader:
-                bug_emb = sample['stack_trace_embedding'].to(self.device)
-                line_emb = sample['line_embeddings'].to(self.device)
+            for sample in self.dataset:
+                bug_emb = sample['stack_trace_embedding'].unsqueeze(0).to(self.device)
+                line_emb = sample['line_embeddings'].unsqueeze(0).to(self.device)
                 line_probs, _ = self.line_agent(bug_emb, line_emb)
-                target = torch.tensor(sample['correct_line_idx'], dtype=torch.long, device=self.device)
+                if len(sample['correct_line_idx']) == 0:
+                    continue
+                target = F.one_hot(torch.tensor(sample['correct_line_idx'], dtype=torch.long, device=self.device), 
+                                   num_classes=len(sample['line_embeddings'])).float()
+                
                 loss = loss_fn(line_probs, target)
                 epoch_loss += loss.item()
                 self.line_optimizer.zero_grad()
                 loss.backward()
                 self.line_optimizer.step()
-            print(f"Pretrain Line Agent Epoch {epoch+1}: Loss = {epoch_loss/len(self.train_loader):.4f}")
+            print(f"Pretrain Line Agent Epoch {epoch+1}: Loss = {epoch_loss/len(self.dataset):.4f}")
 
     def pretrain_all(self):
         if self.file_pretrain_epochs > 0:
@@ -124,10 +136,10 @@ class HRLTrainer:
         return line_probs[0, target_idx]
 
     def train_episode(self, sample):
-        bug_emb = sample["stack_trace_embedding"].to(self.device)
-        file_emb = sample["file_embeddings"].to(self.device)
-        func_emb = sample["function_embeddings"].to(self.device)
-        line_emb = sample["line_embeddings"].to(self.device)
+        bug_emb = sample["stack_trace_embedding"].unsqueeze(0).to(self.device)
+        file_emb = sample["file_embeddings"].unsqueeze(0).to(self.device)
+        func_emb = sample["function_embeddings"].unsqueeze(0).to(self.device)
+        line_emb = sample["line_embeddings"].unsqueeze(0).to(self.device)
         
         file_probs, file_scores = self.file_agent(bug_emb, file_emb)
         m_file = torch.distributions.Categorical(file_probs)
@@ -145,17 +157,17 @@ class HRLTrainer:
         log_prob_line = m_line.log_prob(line_action)
         
         if self.reward_mode == "sparse":
-            file_correct = (file_action.item() == sample['correct_file_idx'][0])
-            func_correct = (func_action.item() == sample['correct_function_idx'][0])
-            line_correct = (line_action.item() == sample['correct_line_idx'][0])
+            file_correct = (file_action.item() == sample['correct_file_idx'])
+            func_correct = (func_action.item() == sample['correct_function_idx'])
+            line_correct = (line_action.item() == sample['correct_line_idx'])
             reward = 1.0 if file_correct and func_correct and line_correct else 0.0
         elif self.reward_mode in ["intermediate", "ranking", "mixed"]:
-            r_file_int = self._compute_intermediate_reward_file(file_probs, file_scores, sample['correct_file_idx'][0])
-            r_func_int = self._compute_intermediate_reward_func(func_probs, func_scores, sample['correct_function_idx'][0])
-            target_line_idx = sample['correct_line_idx'][0]
+            r_file_int = self._compute_intermediate_reward_file(file_probs, file_scores, sample['correct_file_idx'])
+            r_func_int = self._compute_intermediate_reward_func(func_probs, func_scores, sample['correct_function_idx'])
+            target_line_idx = sample['correct_line_idx']
             r_line_int = self._compute_reward_line(line_probs, target_line_idx)
-            r_file_rank = self._compute_ranking_reward_file(file_scores, sample['correct_file_idx'][0])
-            r_func_rank = self._compute_ranking_reward_func(func_scores, sample['correct_function_idx'][0])
+            r_file_rank = self._compute_ranking_reward_file(file_scores, sample['correct_file_idx'])
+            r_func_rank = self._compute_ranking_reward_func(func_scores, sample['correct_function_idx'])
             r_line_rank = r_line_int
             if self.reward_mode == "intermediate":
                 reward = (r_file_int + r_func_int + r_line_int) / 3.0
@@ -174,35 +186,35 @@ class HRLTrainer:
         return loss, reward
 
     def compute_metrics(self):
-        total_samples = len(self.test_loader)
+        total_samples = len(self.test_dataset)
         file_correct_count = 0
         function_correct_count = 0
         line_correct_count = 0
         overall_correct_count = 0
-        for sample in self.test_loader:
-            bug_emb = sample["stack_trace_embedding"].to(self.device)
-            file_emb = sample["file_embeddings"].to(self.device)
-            func_emb = sample["function_embeddings"].to(self.device)
-            line_emb = sample["line_embeddings"].to(self.device)
+        for sample in self.test_dataset:
+            bug_emb = sample["stack_trace_embedding"].unsqueeze(0).to(self.device)
+            file_emb = sample["file_embeddings"].unsqueeze(0).to(self.device)
+            func_emb = sample["function_embeddings"].unsqueeze(0).to(self.device)
+            line_emb = sample["line_embeddings"].unsqueeze(0).to(self.device)
             
             file_probs, _ = self.file_agent(bug_emb, file_emb)
             file_pred = torch.argmax(file_probs, dim=1).item()
-            if file_pred == sample['correct_file_idx'][0]:
+            if file_pred == sample['correct_file_idx']:
                 file_correct_count += 1
                 
             func_probs, _ = self.function_agent(bug_emb, func_emb)
             func_pred = torch.argmax(func_probs, dim=1).item()
-            if func_pred == sample['correct_function_idx'][0]:
+            if func_pred == sample['correct_function_idx']:
                 function_correct_count += 1
                 
             line_probs, _ = self.line_agent(bug_emb, line_emb)
             line_pred = torch.argmax(line_probs, dim=1).item()
-            if line_pred == sample['correct_line_idx'][0]:
+            if line_pred == sample['correct_line_idx']:
                 line_correct_count += 1
                 
-            if (file_pred == sample['correct_file_idx'][0] and 
-                func_pred == sample['correct_function_idx'][0] and 
-                line_pred == sample['correct_line_idx'][0]):
+            if (file_pred == sample['correct_file_idx'] and 
+                func_pred == sample['correct_function_idx'] and 
+                line_pred == sample['correct_line_idx']):
                 overall_correct_count += 1
 
         metrics = {
@@ -222,7 +234,7 @@ class HRLTrainer:
         for epoch in range(epochs):
             epoch_loss = 0
             epoch_reward = 0
-            for sample in self.train_loader:
+            for sample in self.dataset:
                 loss, reward = self.train_episode(sample)
                 epoch_loss += loss.item()
                 epoch_reward += reward
@@ -233,8 +245,8 @@ class HRLTrainer:
                 self.file_optimizer.step()
                 self.func_optimizer.step()
                 self.line_optimizer.step()
-            avg_loss = epoch_loss / len(self.train_loader)
-            avg_reward = epoch_reward / len(self.train_loader)
+            avg_loss = epoch_loss / len(self.dataset)
+            avg_reward = epoch_reward / len(self.dataset)
             print(f"Epoch {epoch+1}: Average Loss = {avg_loss:.4f}, Average Reward = {avg_reward:.4f}")
             total_rewards += epoch_reward
             print("Evaluation Metrics:", self.compute_metrics())
@@ -252,8 +264,10 @@ line_emb_dim = 768
 hidden_dim = 128
 
 from atlas_agent import FileLevelAgent, FunctionLevelAgent, LineLevelAgent
+from dataembedder import CodeBERTEmbedder
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+embedder = CodeBERTEmbedder(device=device)
 file_agent = FileLevelAgent(bug_emb_dim, file_emb_dim, hidden_dim, use_projection=True, projection_dim=128)
 function_agent = FunctionLevelAgent(bug_emb_dim, func_emb_dim, hidden_dim, use_projection=True, projection_dim=128)
 line_agent = LineLevelAgent(bug_emb_dim, line_emb_dim, hidden_dim, use_projection=True, projection_dim=128)
@@ -261,15 +275,14 @@ file_optimizer = optim.Adam(file_agent.parameters(), lr=1e-3)
 func_optimizer = optim.Adam(function_agent.parameters(), lr=1e-3)
 line_optimizer = optim.Adam(line_agent.parameters(), lr=1e-3)
 
+
 from data_loader import JsonDataset
-train_dataset = JsonDataset('/Users/rishavsinha/Documents/atlas/dataset/train-001.json')
-test_dataset = JsonDataset('/Users/rishavsinha/Documents/atlas/dataset/val.json')
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+train_data = JsonDataset('/Users/rishavsinha/Documents/atlas/dataset/train-001.json')
+test_data = JsonDataset('/Users/rishavsinha/Documents/atlas/dataset/val.json')
 
 trainer = HRLTrainer(
-    train_data=train_loader,
-    test_data=test_loader, 
+    train_data=train_data,
+    test_data=test_data, 
     file_agent=file_agent,
     function_agent=function_agent,
     line_agent=line_agent,
@@ -281,9 +294,9 @@ trainer = HRLTrainer(
     reward_mode="sparse",  # Options: "sparse", "intermediate", "ranking", "mixed"
     alpha=0.5,
     tau=0.1,
-    file_pretrain_epochs=10,
-    func_pretrain_epochs=10,
-    line_pretrain_epochs=10
+    file_pretrain_epochs=20,
+    func_pretrain_epochs=20,
+    line_pretrain_epochs=20
 )
 
 trainer.train(epochs=100)
