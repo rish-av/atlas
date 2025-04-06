@@ -1,6 +1,6 @@
 import torch
 from transformers import RobertaTokenizer, RobertaModel
-
+import re
 class CodeBERTEmbedder:
     def __init__(self, device="cpu"):
         self.device = device
@@ -31,3 +31,45 @@ class CodeBERTEmbedder:
     def get_line_embeddings(self, candidate_lines: list) -> torch.Tensor:
         embeddings = [self.embed_text(line) for line in candidate_lines]
         return torch.stack(embeddings, dim=0)
+
+
+def extract_functions_regex(file_content):
+    try:
+        method_pattern = r'((?:public|private|protected|static|final|abstract|synchronized)\s+[\w\<\>\[\]]+\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*(?:throws\s+[^{]+)?\s*\{)'
+        functions = []
+        function_info = []
+        for match in re.finditer(method_pattern, file_content):
+            method_start = match.start()
+            method_name = match.group(2)
+            start_line = file_content[:method_start].count('\n') + 1
+            open_braces = 0
+            close_pos = match.end()
+            for i in range(match.end(), len(file_content)):
+                if file_content[i] == '{':
+                    open_braces += 1
+                elif file_content[i] == '}':
+                    if open_braces == 0:
+                        close_pos = i + 1
+                        break
+                    open_braces -= 1
+            end_line = file_content[:close_pos].count('\n') + 1
+            function_content = file_content[match.start():close_pos]
+            functions.append(function_content)
+            function_info.append({'name': method_name, 'start_line': start_line, 'end_line': end_line})
+        return functions, function_info
+    except Exception as e:
+        print(f"Error extracting functions: {e}")
+        return [], []
+
+def extract_global_code(file_content, function_info):
+    try:
+        lines = file_content.split('\n')
+        function_line_ranges = [(info['start_line'], info['end_line']) for info in function_info]
+        global_lines = []
+        for i, line in enumerate(lines, 1):
+            if not any(start <= i <= end for start, end in function_line_ranges):
+                global_lines.append(line)
+        return '\n'.join(global_lines)
+    except Exception as e:
+        print(f"Error extracting global code: {e}")
+        return ""
